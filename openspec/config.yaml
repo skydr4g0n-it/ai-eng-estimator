@@ -1,0 +1,21 @@
+# https://github.com/Fission-AI/OpenSpec/blob/main/docs/customization.md
+schema: spec-driven
+
+context: |
+  Course project: meeting transcription → LLM software estimation API.
+
+  Monorepo: ship in `engine/` (FastAPI, Uvicorn); govern in `openspec/`. HTTP shapes live in `engine/app/schemas/`; routers stay thin; business logic in `engine/app/services/`. All LLM calls go through the service-layer abstraction—never wire SDK clients ad hoc in routers.
+
+  Few-shot / CAG examples: only `engine/app/context/`—extend there instead of duplicating long prompt strings.
+
+  Python 3.11+, Pydantic Settings, pytest + httpx. Routine validation: from `engine/`, `docker compose run --rm tests` (matches CI; LLM mocked—no live keys required).
+
+  Engineering docs and OpenSpec artifacts: English. Git branches: `session-XX-MO` with zero-padded `XX`. No secrets in repo or logs; env knobs documented in `engine/.env.example` only; default logging must not include API keys or full transcriptions.
+
+rules:
+  proposal:
+    - For Modified Capabilities, reuse the exact kebab-case directory names already under `openspec/specs/`—list the tree before inventing a new capability slug.
+  design:
+    - File paths, modules, Docker, and CI references must be under `engine/` (there is no longer a root-level Python app tree).
+  tasks:
+    - Verification and manual test steps assume cwd or paths under `engine/` and Compose-based runs unless the task explicitly says otherwise.
