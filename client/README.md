@@ -1,6 +1,6 @@
 # Estimator Streamlit client
 
-Small **Streamlit** form that mirrors the engine’s synchronous **`EstimationRequest`** (`description`, `project_type`, `detail_level`, `output_format`) and displays the returned **`text`** and **`prompt_version`**.
+Small **Streamlit** form that mirrors the engine's synchronous **`EstimationRequest`** (`description`, `project_type`, `detail_level`, `output_format`) and displays the returned **`text`** and **`prompt_version`**.
 
 ## Environment
 
@@ -13,13 +13,28 @@ Small **Streamlit** form that mirrors the engine’s synchronous **`EstimationRe
 From this directory, with Python 3.11+:
 
 ```bash
-pip install -r requirements.txt
-streamlit run app.py
+uv sync
+uv run streamlit run app.py
 ```
 
-Optional: create a virtualenv first (`python -m venv .venv`, activate, then install).
+Use `ESTIMATOR_API_BASE_URL=http://localhost:8000` when running against a local engine.
 
-## Enum parity with the engine
+## Tooling
+
+Run linting and formatting from this directory:
+
+```bash
+uv run ruff check .
+uv run ruff format .
+```
+
+Install the versioned pre-commit hooks with:
+
+```bash
+uv run pre-commit install --config .pre-commit-config.yaml
+```
+
+## Model parity with the engine
 
 Field names and allowed string values match **`engine/app/schemas/estimation.py`**:
 
@@ -27,4 +42,10 @@ Field names and allowed string values match **`engine/app/schemas/estimation.py`
 - **detail_level:** `summary`, `medium`, `detailed`
 - **output_format:** `phases_table`, `line_items`, `narrative`
 
-The client duplicates these in `models.py` so it can run without installing the engine package. Keep both in sync when the wire contract changes.
+Regenerate `models.py` after engine schema changes:
+
+```bash
+uv run scripts/export_models.py
+```
+
+The generated file is committed so the Streamlit client can import the same wire contract without installing the engine as a package.

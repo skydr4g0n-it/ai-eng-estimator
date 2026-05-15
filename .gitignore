@@ -1,0 +1,7 @@
+__pycache__/
+.pytest_cache/
+.pre-commit-cache/
+.ruff_cache/
+.tmp-playwright/
+.venv/
+.uv-cache/

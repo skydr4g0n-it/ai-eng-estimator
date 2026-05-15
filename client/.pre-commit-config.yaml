@@ -1,0 +1,15 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --project client ruff check --no-cache --config client/pyproject.toml
+        language: system
+        files: ^client/.*\.py$
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --project client ruff format --no-cache --config client/pyproject.toml
+        language: system
+        files: ^client/.*\.py$
+        types_or: [python, pyi]
