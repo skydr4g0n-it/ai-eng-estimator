@@ -24,6 +24,7 @@ from typing import Any, Iterator
 import litellm
 import structlog
 from litellm import Router
+from pydantic import BaseModel, ValidationError
 
 from app.services.cache import EstimationCache
 
@@ -254,6 +255,66 @@ class LLMWrapper:
             },
         )
 
+    def complete_structured(
+        self,
+        *,
+        system_prompt: str,
+        user_message: str,
+        response_model: type[BaseModel],
+        model_override: str | None = None,
+        max_tokens: int = 4000,
+        validation_retries: int = 2,
+    ) -> dict[str, Any]:
+        """Return a validated Pydantic model using Instructor-style structured output."""
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ]
+        resolved_model = model_override or self.primary_model
+        log.info(
+            "structured_llm_call_started",
+            model=resolved_model,
+            validation_retries=validation_retries,
+        )
+        t0 = time.perf_counter()
+        try:
+            parsed = self._dispatch_structured(
+                messages=messages,
+                response_model=response_model,
+                model_override=model_override,
+                max_tokens=max_tokens,
+                validation_retries=validation_retries,
+            )
+            if not isinstance(parsed, response_model):
+                parsed = response_model.model_validate(parsed)
+        except (ValidationError, ValueError, TypeError) as exc:
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            log.error(
+                "structured_llm_validation_exhausted",
+                error_type=type(exc).__name__,
+                latency_ms=latency_ms,
+                model=resolved_model,
+            )
+            raise
+        except Exception as exc:
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            log.error(
+                "structured_llm_call_failed",
+                error_type=type(exc).__name__,
+                latency_ms=latency_ms,
+                model=resolved_model,
+            )
+            raise
+
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        metadata = {
+            "model": _normalise_model_name(resolved_model),
+            "provider": _provider_from_model(resolved_model),
+            "latency_ms": latency_ms,
+        }
+        log.info("structured_llm_call_completed", **metadata)
+        return {"result": parsed, "metadata": metadata}
+
     def _build_call_kwargs(
         self,
         *,
@@ -300,6 +361,42 @@ class LLMWrapper:
                 **kwargs,
             )
         return self.router.completion(model="estimator", **kwargs)
+
+    def _dispatch_structured(
+        self,
+        *,
+        messages: list[dict],
+        response_model: type[BaseModel],
+        model_override: str | None,
+        max_tokens: int,
+        validation_retries: int,
+    ) -> BaseModel:
+        """Instructor-backed structured dispatch.
+
+        Kept in a separate method so tests can monkeypatch the provider boundary without
+        reaching into routers or prompt rendering.
+        """
+        try:
+            import instructor
+        except ImportError as exc:  # pragma: no cover - exercised only in incomplete envs
+            raise RuntimeError("instructor is required for structured estimation output") from exc
+
+        target_model = model_override or self.primary_model
+        api_key = (
+            self.anthropic_api_key
+            if _provider_from_model(target_model) == "anthropic"
+            else self.openai_api_key
+        )
+        client = instructor.from_litellm(litellm.completion)
+        return client.chat.completions.create(
+            model=target_model,
+            api_key=api_key,
+            messages=messages,
+            max_tokens=max_tokens,
+            response_model=response_model,
+            max_retries=validation_retries,
+            timeout=self.timeout,
+        )
 
     @staticmethod
     def _normalise_response(response: Any, *, latency_ms: int) -> dict[str, Any]:

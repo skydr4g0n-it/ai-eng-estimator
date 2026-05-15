@@ -37,6 +37,7 @@ class EstimationCache:
         model: str,
         max_tokens: int,
         thinking_budget: int | None,
+        extra_context: dict[str, Any] | None = None,
     ) -> str:
         payload = json.dumps(
             {
@@ -45,6 +46,7 @@ class EstimationCache:
                 "model": model,
                 "max_tokens": max_tokens,
                 "thinking_budget": thinking_budget,
+                "extra_context": extra_context or {},
             },
             sort_keys=True,
         )

@@ -1,7 +1,7 @@
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # --- Streaming / legacy prompt-building (Session 2–3) -------------------------
 
@@ -51,17 +51,73 @@ class EstimationRequest(BaseModel):
     project_type: ProjectType
     detail_level: DetailLevel
     output_format: OutputFormat
+    reference_projects: list["ReferenceProject"] | None = Field(
+        default=None,
+        max_length=5,
+        description="Comparable projects used only as bounded prompt context",
+    )
+
+
+class ReferenceProject(BaseModel):
+    """Bounded comparable-project context for the synchronous estimator."""
+
+    name: str = Field(..., min_length=1, max_length=80)
+    project_type: str = Field(..., min_length=1, max_length=80)
+    short_description: str = Field(..., min_length=10, max_length=400)
+    comparable_scope: str = Field(..., min_length=1, max_length=300)
+    total_hours: int | None = Field(default=None, ge=1, le=100_000)
+    total_cost_eur: int | None = Field(default=None, ge=0, le=10_000_000)
+    lessons: str | None = Field(default=None, max_length=300)
 
 
 class EstimationResponse(BaseModel):
-    """Minimal synchronous response: rendered estimation text and prompt pack id."""
+    """Synchronous response: validated estimation data and prompt pack id."""
 
-    text: str = Field(..., min_length=1, description="Generated estimation content")
+    result: "EstimationResult"
     prompt_version: str = Field(
         ...,
         min_length=1,
         description="Prompt template pack version (e.g. v1 for estimation/v1/)",
     )
+
+
+class Phase(BaseModel):
+    """One phase of the structured estimate."""
+
+    name: str = Field(..., min_length=1, max_length=120)
+    duration_weeks: int = Field(..., ge=1, le=52)
+    cost_eur: int = Field(..., ge=0)
+    confidence_pct: int = Field(..., ge=0, le=100)
+    assumptions: list[str] = Field(default_factory=list, max_length=12)
+
+
+class EstimationResult(BaseModel):
+    """Structured output expected from the synchronous LLM path."""
+
+    summary: str = Field(..., min_length=1, max_length=2000)
+    total_duration_weeks: int = Field(..., ge=1)
+    total_cost_eur: int = Field(..., ge=0)
+    confidence_pct: int = Field(..., ge=0, le=100)
+    phases: list[Phase] = Field(..., min_length=1)
+
+    @model_validator(mode="after")
+    def total_must_match_sum_of_phases(self) -> "EstimationResult":
+        phase_weeks = sum(phase.duration_weeks for phase in self.phases)
+        if abs(phase_weeks - self.total_duration_weeks) > 1:
+            raise ValueError(
+                "total_duration_weeks must match summed phase duration within 1 week",
+            )
+
+        phase_cost = sum(phase.cost_eur for phase in self.phases)
+        if self.total_cost_eur == 0:
+            if phase_cost != 0:
+                raise ValueError("total_cost_eur is zero but phase costs are non-zero")
+            return self
+
+        relative_delta = abs(phase_cost - self.total_cost_eur) / self.total_cost_eur
+        if relative_delta > 0.05:
+            raise ValueError("total_cost_eur must match summed phase cost within 5%")
+        return self
 
 
 # --- Internal / evaluation (not returned on sync estimate) ------------------

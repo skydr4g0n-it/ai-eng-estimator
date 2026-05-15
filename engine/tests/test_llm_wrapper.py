@@ -4,11 +4,14 @@ from unittest.mock import patch
 import fakeredis
 import pytest
 
+from app.schemas.estimation import EstimationResult
 from app.services.cache import EstimationCache
 from app.services.llm_wrapper import LLMWrapper, _estimate_cost
 
 
-def _fake_completion(model: str, content: str = "the answer", input_tokens: int = 100, output_tokens: int = 50):
+def _fake_completion(
+    model: str, content: str = "the answer", input_tokens: int = 100, output_tokens: int = 50
+):
     """Build a SimpleNamespace shaped like a litellm.ModelResponse."""
     return SimpleNamespace(
         model=model,
@@ -82,8 +85,10 @@ def test_complete_returns_normalised_dict_and_caches(wrapper: LLMWrapper) -> Non
 
 def test_complete_with_model_override_bypasses_router(wrapper: LLMWrapper) -> None:
     fake = _fake_completion(model="gpt-4o", content="overridden")
-    with patch("app.services.llm_wrapper.litellm.completion", return_value=fake) as direct, \
-        patch.object(wrapper.router, "completion") as router_call:
+    with (
+        patch("app.services.llm_wrapper.litellm.completion", return_value=fake) as direct,
+        patch.object(wrapper.router, "completion") as router_call,
+    ):
         result = wrapper.complete(
             system_prompt="sys",
             user_message="usr",
@@ -155,3 +160,51 @@ def test_complete_stream_yields_chunks_and_caches(wrapper: LLMWrapper) -> None:
         )
     assert router_call.call_count == 0
     assert "".join(replayed) == "Hello world"
+
+
+def _structured_result() -> EstimationResult:
+    return EstimationResult(
+        summary="CRM MVP.",
+        total_duration_weeks=2,
+        total_cost_eur=4000,
+        confidence_pct=80,
+        phases=[
+            {
+                "name": "Build",
+                "duration_weeks": 2,
+                "cost_eur": 4000,
+                "confidence_pct": 80,
+                "assumptions": ["Small team."],
+            },
+        ],
+    )
+
+
+def test_complete_structured_returns_model_and_metadata(wrapper: LLMWrapper) -> None:
+    with patch.object(
+        wrapper, "_dispatch_structured", return_value=_structured_result()
+    ) as dispatch:
+        result = wrapper.complete_structured(
+            system_prompt="sys",
+            user_message="usr",
+            response_model=EstimationResult,
+            model_override=None,
+            max_tokens=4000,
+            validation_retries=2,
+        )
+    assert isinstance(result["result"], EstimationResult)
+    assert result["metadata"]["model"] == "gpt-4o-mini"
+    assert dispatch.call_args.kwargs["validation_retries"] == 2
+
+
+def test_complete_structured_honors_model_override(wrapper: LLMWrapper) -> None:
+    with patch.object(wrapper, "_dispatch_structured", return_value=_structured_result()):
+        result = wrapper.complete_structured(
+            system_prompt="sys",
+            user_message="usr",
+            response_model=EstimationResult,
+            model_override="gpt-4o",
+            max_tokens=4000,
+            validation_retries=2,
+        )
+    assert result["metadata"]["model"] == "gpt-4o"
