@@ -89,5 +89,5 @@ if submitted:
                 st.error(f"HTTP {r.status_code}")
                 try:
                     st.json(r.json())
-                except Exception:
+                except ValueError:
                     st.code(r.text)

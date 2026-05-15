@@ -35,4 +35,4 @@
 ## 6. Verification
 
 - [x] 6.1 From `engine/`, run `docker compose run --rm tests` (or equivalent CI command) and fix failures until green.
-- [ ] 6.2 Manual smoke: run engine locally, run Streamlit client against it, submit a valid form and confirm rendered `text`.
+- [x] 6.2 Manual smoke: run engine locally, run Streamlit client against it, submit a valid form and confirm rendered `text`.
