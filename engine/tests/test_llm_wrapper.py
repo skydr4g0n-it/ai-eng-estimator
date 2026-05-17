@@ -6,7 +6,7 @@ import pytest
 
 from app.schemas.estimation import EstimationResult
 from app.services.cache import EstimationCache
-from app.services.llm_wrapper import LLMWrapper, _estimate_cost
+from app.services.llm_wrapper import LLMWrapper, _estimate_cost, _provider_from_model
 
 
 def _fake_completion(
@@ -35,6 +35,9 @@ def wrapper() -> LLMWrapper:
     return LLMWrapper(
         openai_api_key="fake-openai",
         anthropic_api_key="fake-anthropic",
+        google_api_key="fake-google",
+        ollama_base_url="http://localhost:11434",
+        ollama_model="qwen2.5:14b",
         primary_model="gpt-4o-mini",
         fallback_model="claude-haiku-4-5-20251001",
         timeout=30,
@@ -208,3 +211,133 @@ def test_complete_structured_honors_model_override(wrapper: LLMWrapper) -> None:
             validation_retries=2,
         )
     assert result["metadata"]["model"] == "gpt-4o"
+
+
+def test_provider_from_model_ollama() -> None:
+    assert _provider_from_model("ollama/qwen2.5:14b") == "ollama"
+    assert _provider_from_model("qwen2.5:14b") == "unknown"
+
+
+def test_provider_from_model_google() -> None:
+    assert _provider_from_model("gemini/gemini-2.5-flash") == "google"
+    assert _provider_from_model("gemini-2.5-flash") == "google"
+    assert _provider_from_model("gemini-pro") == "google"
+
+
+def test_provider_from_model_existing() -> None:
+    assert _provider_from_model("gpt-4o-mini") == "openai"
+    assert _provider_from_model("anthropic/claude-haiku-4-5") == "anthropic"
+
+
+def test_dispatch_ollama_override(wrapper: LLMWrapper) -> None:
+    fake = _fake_completion(model="ollama/qwen2.5:14b", content="local response")
+    with (
+        patch("app.services.llm_wrapper.litellm.completion", return_value=fake) as direct,
+        patch.object(wrapper.router, "completion") as router_call,
+    ):
+        result = wrapper.complete(
+            system_prompt="sys",
+            user_message="usr",
+            model_override="ollama/qwen2.5:14b",
+            max_tokens=4000,
+            thinking_budget=None,
+        )
+    assert direct.call_count == 1
+    assert router_call.call_count == 0
+    call_kwargs = direct.call_args.kwargs
+    assert "api_base" in call_kwargs
+    assert call_kwargs["api_base"] == "http://localhost:11434"
+    assert "api_key" not in call_kwargs
+    assert result["provider"] == "ollama"
+
+
+def test_dispatch_google_override(wrapper: LLMWrapper) -> None:
+    fake = _fake_completion(model="gemini/gemini-2.5-flash", content="gemini response")
+    with (
+        patch("app.services.llm_wrapper.litellm.completion", return_value=fake) as direct,
+        patch.object(wrapper.router, "completion") as router_call,
+    ):
+        result = wrapper.complete(
+            system_prompt="sys",
+            user_message="usr",
+            model_override="gemini/gemini-2.5-flash",
+            max_tokens=4000,
+            thinking_budget=None,
+        )
+    assert direct.call_count == 1
+    assert router_call.call_count == 0
+    call_kwargs = direct.call_args.kwargs
+    assert call_kwargs["api_key"] == "fake-google"
+    assert result["provider"] == "google"
+
+
+def test_fallback_chain_local_success(wrapper: LLMWrapper) -> None:
+    fake = _fake_completion(model="ollama/qwen2.5:14b", content="local success")
+    with patch.object(wrapper.router, "completion", return_value=fake) as mocked:
+        result = wrapper.complete(
+            system_prompt="sys",
+            user_message="usr",
+            model_override=None,
+            max_tokens=4000,
+            thinking_budget=None,
+        )
+    assert mocked.call_count == 1
+    assert result["estimation"] == "local success"
+
+
+def test_fallback_chain_exhaustion(wrapper: LLMWrapper) -> None:
+    with patch.object(
+        wrapper.router, "completion", side_effect=Exception("all providers failed")
+    ):
+        with pytest.raises(Exception, match="all providers failed"):
+            wrapper.complete(
+                system_prompt="sys",
+                user_message="usr",
+                model_override=None,
+                max_tokens=4000,
+                thinking_budget=None,
+            )
+
+
+def test_offline_mode_no_api_keys() -> None:
+    cache = EstimationCache(fakeredis.FakeRedis(decode_responses=True), ttl=60)
+    wrapper = LLMWrapper(
+        openai_api_key=None,
+        anthropic_api_key=None,
+        google_api_key=None,
+        ollama_base_url="http://localhost:11434",
+        primary_model="gpt-4o-mini",
+        fallback_model="claude-haiku-4-5-20251001",
+        timeout=30,
+        num_retries=2,
+        cache=cache,
+    )
+    assert wrapper.openai_api_key is None
+    assert wrapper.anthropic_api_key is None
+    assert wrapper.google_api_key is None
+
+
+def test_complete_structured_ollama_override(wrapper: LLMWrapper) -> None:
+    with patch.object(wrapper, "_dispatch_structured", return_value=_structured_result()):
+        result = wrapper.complete_structured(
+            system_prompt="sys",
+            user_message="usr",
+            response_model=EstimationResult,
+            model_override="ollama/qwen2.5:14b",
+            max_tokens=4000,
+            validation_retries=2,
+        )
+    assert result["metadata"]["provider"] == "ollama"
+
+
+def test_complete_structured_google_override(wrapper: LLMWrapper) -> None:
+    with patch.object(wrapper, "_dispatch_structured", return_value=_structured_result()):
+        result = wrapper.complete_structured(
+            system_prompt="sys",
+            user_message="usr",
+            response_model=EstimationResult,
+            model_override="gemini/gemini-2.5-flash",
+            max_tokens=4000,
+            validation_retries=2,
+        )
+    assert result["metadata"]["provider"] == "google"

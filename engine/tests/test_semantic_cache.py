@@ -60,8 +60,6 @@ def test_similarity_threshold_translates_to_distance(monkeypatch: pytest.MonkeyP
 
     semantic_mod = types.ModuleType("redisvl.extensions.cache.llm.semantic")
     semantic_mod.SemanticCache = _Cache
-    vectorize_mod = types.ModuleType("redisvl.utils.vectorize")
-    vectorize_mod.OpenAITextVectorizer = _Vectorizer
     monkeypatch.setitem(sys.modules, "redisvl", types.ModuleType("redisvl"))
     monkeypatch.setitem(sys.modules, "redisvl.extensions", types.ModuleType("redisvl.extensions"))
     monkeypatch.setitem(
@@ -73,19 +71,17 @@ def test_similarity_threshold_translates_to_distance(monkeypatch: pytest.MonkeyP
         types.ModuleType("redisvl.extensions.cache.llm"),
     )
     monkeypatch.setitem(sys.modules, "redisvl.extensions.cache.llm.semantic", semantic_mod)
-    monkeypatch.setitem(sys.modules, "redisvl.utils", types.ModuleType("redisvl.utils"))
-    monkeypatch.setitem(sys.modules, "redisvl.utils.vectorize", vectorize_mod)
 
     cache = SemanticEstimationCache(
         redis_url="redis://localhost:6379",
-        embedding_model="text-embedding-3-small",
+        embedding_model="nomic-embed-text",
         similarity_threshold=0.87,
         ttl=60,
         log_only=True,
+        ollama_base_url="http://localhost:11434",
     )
     assert cache.distance_threshold == pytest.approx(0.13)
     assert created["distance_threshold"] == pytest.approx(0.13)
-    assert created["model"] == "text-embedding-3-small"
 
 
 def test_semantic_cache_degrades_when_redisvl_missing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -102,10 +98,11 @@ def test_semantic_cache_degrades_when_redisvl_missing(monkeypatch: pytest.Monkey
     with pytest.raises(SemanticCacheUnavailable):
         SemanticEstimationCache(
             redis_url="redis://localhost:6379",
-            embedding_model="text-embedding-3-small",
+            embedding_model="nomic-embed-text",
             similarity_threshold=0.87,
             ttl=60,
             log_only=True,
+            ollama_base_url="http://localhost:11434",
         )
 
 

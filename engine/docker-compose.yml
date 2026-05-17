@@ -16,6 +16,30 @@ services:
       retries: 3
     restart: unless-stopped
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: estimator-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./ollama-entrypoint.sh:/ollama-entrypoint.sh
+    entrypoint: ["/ollama-entrypoint.sh"]
+    environment:
+      - OLLAMA_MODELS=/root/.ollama/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+
   api:
     build: .
     image: estimator:latest
@@ -29,8 +53,12 @@ services:
       SEMANTIC_CACHE_ENABLED: ${SEMANTIC_CACHE_ENABLED:-true}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      OLLAMA_BASE_URL: http://ollama:11434
     depends_on:
       redis:
+        condition: service_healthy
+      ollama:
         condition: service_healthy
     volumes:
       - ./app:/app/app
@@ -61,8 +89,12 @@ services:
       SEMANTIC_CACHE_ENABLED: ${SEMANTIC_CACHE_ENABLED:-false}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-test-openai}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-sk-test-anthropic}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-sk-test-google}
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: qwen3.5:9b
       APP_ENV: test
       LOG_LEVEL: DEBUG
 
 volumes:
   redis_data:
+  ollama_data:

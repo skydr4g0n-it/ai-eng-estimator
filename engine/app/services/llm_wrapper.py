@@ -6,8 +6,8 @@ Design notes
 - The wrapper exposes two primitives: ``complete()`` (blocking, full response) and
   ``complete_stream()`` (yields chunks). Higher-level orchestration (preprocessing,
   validation, prompt building) stays in ``llm_service.py``.
-- The Router is configured with two deployments under the same ``model_name``
-  ("estimator") so LiteLLM can switch from primary to fallback transparently.
+- The Router is configured with multiple deployments under the same ``model_name``
+  ("ollama-estimator") so LiteLLM can switch from primary to fallback transparently.
   When the caller overrides the model per-request (Session 2 live demos), we
   bypass the Router and call ``litellm.completion`` directly with explicit
   credentials — that path has no fallback by design.
@@ -37,6 +37,8 @@ MODEL_COSTS: dict[str, dict[str, float]] = {
     "claude-haiku-4-5": {"input": 1.00, "output": 5.00},
     "claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00},
     "claude-sonnet-4-5": {"input": 3.00, "output": 15.00},
+    "gemini-2.5-flash": {"input": 0.10, "output": 0.40},
+    "qwen3.5:9b": {"input": 0.0, "output": 0.0},
 }
 
 
@@ -52,6 +54,11 @@ def _normalise_model_name(model: str) -> str:
 
 
 def _provider_from_model(model: str) -> str:
+    raw = model.lower()
+    if raw.startswith("ollama"):
+        return "ollama"
+    if raw.startswith("gemini"):
+        return "google"
     name = _normalise_model_name(model).lower()
     if name.startswith("claude"):
         return "anthropic"
@@ -68,6 +75,9 @@ class LLMWrapper:
         *,
         openai_api_key: str | None,
         anthropic_api_key: str | None,
+        google_api_key: str | None = None,
+        ollama_base_url: str = "http://localhost:11434",
+        ollama_model: str = "qwen3.5:9b",
         primary_model: str,
         fallback_model: str,
         timeout: int,
@@ -76,6 +86,9 @@ class LLMWrapper:
     ):
         self.openai_api_key = openai_api_key
         self.anthropic_api_key = anthropic_api_key
+        self.google_api_key = google_api_key
+        self.ollama_base_url = ollama_base_url
+        self.ollama_model = ollama_model
         self.primary_model = primary_model
         self.fallback_model = fallback_model
         self.timeout = timeout
@@ -85,23 +98,43 @@ class LLMWrapper:
         self.router = Router(
             model_list=[
                 {
-                    "model_name": "estimator",
+                    "model_name": "ollama-estimator",
+                    "litellm_params": {
+                        "model": f"ollama/{ollama_model}",
+                        "api_base": ollama_base_url,
+                        "timeout": 120,
+                    },
+                },
+                {
+                    "model_name": "gemini-estimator",
+                    "litellm_params": {
+                        "model": "gemini/gemini-2.5-flash",
+                        "api_key": google_api_key,
+                        "timeout": timeout,
+                    },
+                },
+                {
+                    "model_name": "anthropic-estimator",
+                    "litellm_params": {
+                        "model": f"anthropic/{fallback_model}",
+                        "api_key": anthropic_api_key,
+                        "timeout": timeout,
+                    },
+                },
+                {
+                    "model_name": "openai-estimator",
                     "litellm_params": {
                         "model": primary_model,
                         "api_key": openai_api_key,
                         "timeout": timeout,
                     },
                 },
-                {
-                    "model_name": "estimator",
-                    "litellm_params": {
-                        "model": fallback_model,
-                        "api_key": anthropic_api_key,
-                        "timeout": timeout,
-                    },
-                },
             ],
-            fallbacks=[{"estimator": ["estimator"]}],
+            fallbacks=[
+                {"ollama-estimator": ["gemini-estimator"]},
+                {"gemini-estimator": ["anthropic-estimator"]},
+                {"anthropic-estimator": ["openai-estimator"]},
+            ],
             num_retries=num_retries,
         )
 
@@ -348,9 +381,26 @@ class LLMWrapper:
         """Call the Router (with fallback) or LiteLLM directly when the caller
         wants a specific model."""
         if model_override:
+            provider = _provider_from_model(model_override)
+            if provider == "ollama":
+                return litellm.completion(
+                    model=model_override,
+                    api_base=self.ollama_base_url,
+                    timeout=self.timeout,
+                    num_retries=self.num_retries,
+                    **kwargs,
+                )
+            if provider == "google":
+                return litellm.completion(
+                    model=model_override,
+                    api_key=self.google_api_key,
+                    timeout=self.timeout,
+                    num_retries=self.num_retries,
+                    **kwargs,
+                )
             api_key = (
                 self.anthropic_api_key
-                if _provider_from_model(model_override) == "anthropic"
+                if provider == "anthropic"
                 else self.openai_api_key
             )
             return litellm.completion(
@@ -360,7 +410,7 @@ class LLMWrapper:
                 num_retries=self.num_retries,
                 **kwargs,
             )
-        return self.router.completion(model="estimator", **kwargs)
+        return self.router.completion(model="ollama-estimator", **kwargs)
 
     def _dispatch_structured(
         self,
@@ -378,13 +428,116 @@ class LLMWrapper:
         """
         try:
             import instructor
-        except ImportError as exc:  # pragma: no cover - exercised only in incomplete envs
+            from instructor import Mode
+        except ImportError as exc:
             raise RuntimeError("instructor is required for structured estimation output") from exc
 
-        target_model = model_override or self.primary_model
+        if model_override is None:
+            providers = [
+                ("ollama", Mode.JSON, self.ollama_base_url, None),
+                ("google", Mode.JSON, None, self.google_api_key),
+                ("anthropic", Mode.TOOLS, None, self.anthropic_api_key),
+                ("openai", Mode.TOOLS, None, self.openai_api_key),
+            ]
+            last_error: Exception | None = None
+            for provider_name, mode, api_base, api_key in providers:
+                if provider_name == "ollama" and api_base:
+                    try:
+                        client = instructor.from_litellm(litellm.completion, mode=mode)
+                        return client.chat.completions.create(
+                            model=f"ollama/{self.ollama_model}",
+                            api_base=api_base,
+                            messages=messages,
+                            max_tokens=max_tokens,
+                            response_model=response_model,
+                            max_retries=validation_retries,
+                            timeout=self.timeout,
+                            extra_body={"think": False},
+                        )
+                    except Exception as exc:
+                        last_error = exc
+                        log.warning("structured_fallback", provider=provider_name, error=str(exc))
+                        continue
+                if provider_name == "google" and api_key:
+                    try:
+                        client = instructor.from_litellm(litellm.completion, mode=mode)
+                        return client.chat.completions.create(
+                            model="gemini/gemini-2.5-flash",
+                            api_key=api_key,
+                            messages=messages,
+                            max_tokens=max_tokens,
+                            response_model=response_model,
+                            max_retries=validation_retries,
+                            timeout=self.timeout,
+                        )
+                    except Exception as exc:
+                        last_error = exc
+                        log.warning("structured_fallback", provider=provider_name, error=str(exc))
+                        continue
+                if provider_name == "anthropic" and api_key:
+                    try:
+                        client = instructor.from_litellm(litellm.completion, mode=mode)
+                        return client.chat.completions.create(
+                            model=f"anthropic/{self.fallback_model}",
+                            api_key=api_key,
+                            messages=messages,
+                            max_tokens=max_tokens,
+                            response_model=response_model,
+                            max_retries=validation_retries,
+                            timeout=self.timeout,
+                        )
+                    except Exception as exc:
+                        last_error = exc
+                        log.warning("structured_fallback", provider=provider_name, error=str(exc))
+                        continue
+                if provider_name == "openai" and api_key:
+                    try:
+                        client = instructor.from_litellm(litellm.completion, mode=mode)
+                        return client.chat.completions.create(
+                            model=self.primary_model,
+                            api_key=api_key,
+                            messages=messages,
+                            max_tokens=max_tokens,
+                            response_model=response_model,
+                            max_retries=validation_retries,
+                            timeout=self.timeout,
+                        )
+                    except Exception as exc:
+                        last_error = exc
+                        log.warning("structured_fallback", provider=provider_name, error=str(exc))
+                        continue
+            if last_error:
+                raise last_error
+            raise RuntimeError("No LLM providers available for structured dispatch")
+
+        target_model = model_override
+        provider = _provider_from_model(target_model)
+        if provider == "ollama":
+            client = instructor.from_litellm(litellm.completion, mode=Mode.JSON)
+            return client.chat.completions.create(
+                model=target_model,
+                api_base=self.ollama_base_url,
+                messages=messages,
+                max_tokens=max_tokens,
+                response_model=response_model,
+                max_retries=validation_retries,
+                timeout=self.timeout,
+                extra_body={"think": False},
+            )
+        if provider == "google":
+            client = instructor.from_litellm(litellm.completion, mode=Mode.JSON)
+            return client.chat.completions.create(
+                model=target_model,
+                api_key=self.google_api_key,
+                messages=messages,
+                max_tokens=max_tokens,
+                response_model=response_model,
+                max_retries=validation_retries,
+                timeout=self.timeout,
+            )
         api_key = (
             self.anthropic_api_key
-            if _provider_from_model(target_model) == "anthropic"
+            if provider == "anthropic"
             else self.openai_api_key
         )
         client = instructor.from_litellm(litellm.completion)
@@ -413,7 +566,7 @@ class LLMWrapper:
         return {
             "estimation": choice.message.content or "",
             "model": model,
-            "provider": _provider_from_model(model),
+            "provider": _provider_from_model(response.model),
             "finish_reason": finish_reason,
             "usage": {
                 "input_tokens": input_tokens,

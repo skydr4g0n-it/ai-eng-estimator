@@ -12,6 +12,9 @@ class Settings(BaseSettings):
 
     OPENAI_API_KEY: str | None = None
     ANTHROPIC_API_KEY: str | None = None
+    GOOGLE_API_KEY: str | None = None
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_MODEL: str = "qwen3.5:9b"
     APP_ENV: Literal["development", "staging", "production", "test"] = "development"
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "DEBUG"
 
@@ -27,7 +30,7 @@ class Settings(BaseSettings):
     SEMANTIC_CACHE_LOG_ONLY: bool = False
     SEMANTIC_CACHE_THRESHOLD: float = 0.87
     SEMANTIC_CACHE_TTL: int = 86400
-    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    EMBEDDING_MODEL: str = "qwen3-embedding:8b"
     GUARDRAILS_ENABLED: bool = True
 
     #: Jinja prompt pack for synchronous ``POST /api/v1/estimate`` (subfolder ``estimation/<version>/``).
@@ -36,11 +39,6 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_settings(self) -> "Settings":
-        """LiteLLM may try either provider via fallback, so we require at least one key."""
-        if self.APP_ENV != "test" and not self.OPENAI_API_KEY and not self.ANTHROPIC_API_KEY:
-            raise ValueError(
-                "At least one of OPENAI_API_KEY or ANTHROPIC_API_KEY must be set",
-            )
         if not 0.85 <= self.SEMANTIC_CACHE_THRESHOLD <= 0.90:
             raise ValueError("SEMANTIC_CACHE_THRESHOLD must be between 0.85 and 0.90")
         if self.ESTIMATION_VALIDATION_RETRIES != 2:

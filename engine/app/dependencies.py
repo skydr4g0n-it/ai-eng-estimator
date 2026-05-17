@@ -27,6 +27,9 @@ def get_llm_wrapper() -> LLMWrapper:
     return LLMWrapper(
         openai_api_key=settings.OPENAI_API_KEY,
         anthropic_api_key=settings.ANTHROPIC_API_KEY,
+        google_api_key=settings.GOOGLE_API_KEY,
+        ollama_base_url=settings.OLLAMA_BASE_URL,
+        ollama_model=settings.OLLAMA_MODEL,
         primary_model=settings.PRIMARY_MODEL,
         fallback_model=settings.FALLBACK_MODEL,
         timeout=settings.LLM_TIMEOUT,
@@ -47,6 +50,7 @@ def get_semantic_cache() -> SemanticEstimationCache | None:
             similarity_threshold=settings.SEMANTIC_CACHE_THRESHOLD,
             ttl=settings.SEMANTIC_CACHE_TTL,
             log_only=settings.SEMANTIC_CACHE_LOG_ONLY,
+            ollama_base_url=settings.OLLAMA_BASE_URL,
         )
     except SemanticCacheUnavailable as exc:
         log.warning("semantic_cache_disabled", reason=str(exc))

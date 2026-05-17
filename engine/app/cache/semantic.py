@@ -57,6 +57,7 @@ class SemanticEstimationCache:
         similarity_threshold: float,
         ttl: int,
         log_only: bool,
+        ollama_base_url: str = "http://localhost:11434",
     ) -> None:
         self.redis_url = redis_url
         self.embedding_model = embedding_model
@@ -64,20 +65,25 @@ class SemanticEstimationCache:
         self.distance_threshold = 1 - similarity_threshold
         self.ttl = ttl
         self.log_only = log_only
+        self.ollama_base_url = ollama_base_url
         self._cache: Any | None = None
         self._init_redisvl()
 
     def _init_redisvl(self) -> None:
         try:
             from redisvl.extensions.cache.llm.semantic import SemanticCache
-            from redisvl.utils.vectorize import OpenAITextVectorizer
         except ImportError as exc:
             raise SemanticCacheUnavailable(
                 "RedisVL semantic cache dependencies unavailable"
             ) from exc
 
+        from app.cache.ollama_vectorizer import OllamaTextVectorizer
+
         try:
-            vectorizer = OpenAITextVectorizer(model=self.embedding_model)
+            vectorizer = OllamaTextVectorizer(
+                model=self.embedding_model,
+                base_url=self.ollama_base_url,
+            )
             self._cache = SemanticCache(
                 name="estimation_semantic_cache",
                 redis_url=self.redis_url,
